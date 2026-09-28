@@ -1,13 +1,8 @@
 // prisma/seed.ts  
-import { PrismaClient } from '@prisma/client';
-import { PrismaNeon } from '@prisma/adapter-neon';
 import bcrypt from 'bcryptjs';
 import 'dotenv/config';
 
-const adapter = new PrismaNeon({
-  connectionString: process.env.DATABASE_URL!,
-});
-const prisma = new PrismaClient({ adapter });
+import prisma from '../src/lib/prisma';
 
 async function main() {
   // Admin user — hash generated at seed time
