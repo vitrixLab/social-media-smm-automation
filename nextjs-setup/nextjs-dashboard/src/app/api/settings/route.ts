@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
         workspaceId,
         message: "Automation settings updated",
         dryRun: data?.dryRun ?? process.env.DRY_RUN === "true",
-        aiProvider: data?.aiProvider ?? process.env.AI_PROVIDER || "stub",
+        aiProvider: data?.aiProvider ?? (process.env.AI_PROVIDER || "stub"),
       });
     }
 
