@@ -85,9 +85,11 @@ export async function POST(req: NextRequest) {
 
   // Enqueue to durable Redis queue for background processing
   const publishedJob = await enqueuePublishJob({
+    type: "publish.requested",
+    version: 1,
     jobId: job.id,
     workflowId: "default",
-    workspaceId: workspaceId,
+    workspaceId,
     socialAccountId: platform,
     contentRevisionId: draftId,
     idempotencyKey,
