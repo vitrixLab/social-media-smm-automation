@@ -63,11 +63,17 @@ async function processPublishJob(
       };
     }
 
-    // Create brand profile (in production, this would come from database)
+    // Load the workspace's brand profile from the database.
+    // Falls back to empty-string defaults when no profile exists yet so
+    // moderation never hard-crashes on a brand-less workspace.
+    const brandRow = await prisma.brandProfile.findFirst({
+      where: { workspaceId },
+      orderBy: { createdAt: "asc" },
+    });
     const brand = new BrandProfile(
-      "Example Brand",
-      "general audience",
-      "clear, helpful"
+      brandRow?.name || "Default Brand",
+      brandRow?.audience || "",
+      brandRow?.voice || "",
     );
 
     // Run moderation

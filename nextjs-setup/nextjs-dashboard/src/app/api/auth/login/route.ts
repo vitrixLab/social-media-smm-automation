@@ -4,11 +4,15 @@ import crypto from "node:crypto";
 import prisma from "@/lib/prisma";
 import { AUTH_COOKIE_NAME } from "@/lib/auth";
 import { checkRateLimit, rateLimitResponse, requireSameOrigin } from "@/lib/security";
+import { clientIpHash, requestIdFromHeaders, writeAuditEvent } from "@/lib/audit";
 
 export async function POST(request: NextRequest) {
   const limit = await checkRateLimit(request, { limit: 5, windowSeconds: 60, scope: "auth:login" });
   if (!limit.allowed) return rateLimitResponse(limit);
   if (!requireSameOrigin(request)) return NextResponse.json({ message: "Invalid request origin." }, { status: 403 });
+
+  const requestId = requestIdFromHeaders(request);
+  const ipHash = clientIpHash(request);
 
   try {
     const body = await request.json() as { email?: unknown; password?: unknown };
@@ -21,6 +25,14 @@ export async function POST(request: NextRequest) {
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      await writeAuditEvent({
+        action: "auth.login_failed",
+        resourceType: "user",
+        resourceId: email,
+        requestId,
+        ipHash,
+        metadata: { reason: "invalid_credentials" },
+      });
       return NextResponse.json({ message: "Invalid credentials." }, { status: 401 });
     }
 
@@ -35,6 +47,17 @@ export async function POST(request: NextRequest) {
     await prisma.session.create({
       data: { userId: user.id, tokenHash: crypto.createHash("sha256").update(rawToken).digest("hex"), expiresAt } as any,
     } as any);
+
+    await writeAuditEvent({
+      workspaceId: membership.workspaceId,
+      actorUserId: user.id,
+      action: "auth.login",
+      resourceType: "user",
+      resourceId: user.id,
+      requestId,
+      ipHash,
+      metadata: { email: user.email, role: membership.role },
+    });
 
     const response = NextResponse.json({
       user: { id: user.id, email: user.email, role: membership.role },

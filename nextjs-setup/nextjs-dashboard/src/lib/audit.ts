@@ -16,6 +16,7 @@ export type AuditAction =
   | "job.dead_lettered"
   | "settings.changed"
   | "auth.login"
+  | "auth.login_failed"
   | "auth.logout"
   | "apikey.created"
   | "apikey.revoked"
