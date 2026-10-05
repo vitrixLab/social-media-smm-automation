@@ -138,7 +138,7 @@ export default function ContentDraftCard({
           <button type="button" className="btn secondary" style={{ padding: "0.5rem 0.7rem", fontSize: "var(--text-xs)" }} onClick={() => onEdit(draft.id)}>Return to draft</button>
         </>}
 
-        {draft.status === "draft" && <button type="button" className="btn secondary" style={{ width: "100%", padding: "0.5rem 0.7rem", fontSize: "var(--text-xs)" }} onClick={() => onUpdateStatus(draft.id, "pending")}>Submit for review →</button>}
+        {draft.status === "draft" && <button type="button" className="btn secondary" style={{ width: "100%", padding: "0.5rem 0.7rem", fontSize: "var(--text-xs)" }} onClick={() => onUpdateStatus(draft.id, "pending")}>Submit for review</button>}
         {draft.status === "rejected" && <button type="button" className="btn secondary" style={{ width: "100%", padding: "0.5rem 0.7rem", fontSize: "var(--text-xs)" }} onClick={() => onUpdateStatus(draft.id, "draft")}>Reopen as draft</button>}
         {draft.status === "scheduled" && <span style={{ color: "var(--accent)", fontSize: "var(--text-xs)", alignSelf: "center" }}>Queued for delivery</span>}
         {draft.status === "published" && <span style={{ color: "var(--primary)", fontSize: "var(--text-xs)", alignSelf: "center" }}>Published status received</span>}

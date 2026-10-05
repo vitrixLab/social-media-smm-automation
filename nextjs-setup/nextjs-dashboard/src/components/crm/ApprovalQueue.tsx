@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { ContentDraft, DraftStatus, Platform } from "@/lib/crm";
 import ContentDraftCard from "@/components/crm/ContentDraftCard";
 
-interface ApprovalQueueProps { selectedPlatform: string; }
+interface ApprovalQueueProps { selectedPlatform: string; dryRun?: boolean; }
 
 const tabs = [
   { id: "all", label: "All items" },
@@ -16,7 +16,7 @@ const tabs = [
   { id: "rejected", label: "Rejected" },
 ];
 
-export default function ApprovalQueue({ selectedPlatform }: ApprovalQueueProps) {
+export default function ApprovalQueue({ selectedPlatform, dryRun = false }: ApprovalQueueProps) {
   const [drafts, setDrafts] = useState<ContentDraft[]>([]);
   const [activeTab, setActiveTab] = useState("all");
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -132,6 +132,11 @@ export default function ApprovalQueue({ selectedPlatform }: ApprovalQueueProps) 
 
   return (
     <section aria-labelledby="approval-queue-heading">
+      {dryRun && (
+        <div role="status" aria-live="polite" style={{ marginBottom: "1rem", padding: "0.65rem 0.9rem", background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.35)", borderRadius: "var(--radius-small)", color: "#f59e0b", fontSize: "var(--text-xs)", fontWeight: "var(--weight-semibold)" }}>
+          Simulate mode — no posts will be published
+        </div>
+      )}
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: "1rem", marginBottom: "1rem" }}>
         <div>
           <span className="eyebrow">Publishing pipeline</span>
@@ -177,9 +182,8 @@ export default function ApprovalQueue({ selectedPlatform }: ApprovalQueueProps) 
         <div className="card" style={{ padding: "2rem", color: "var(--muted)" }}>Loading content…</div>
       ) : drafts.length === 0 ? (
         <div className="card" style={{ padding: "2.5rem 1.5rem", textAlign: "center" }}>
-          <strong style={{ display: "block", fontSize: "var(--text-md)" }}>Nothing here yet</strong>
-          <p style={{ margin: "0.4rem 0 1rem", color: "var(--muted)", fontSize: "var(--text-sm)" }}>Try another filter or create a new draft.</p>
-          <button type="button" className="btn secondary" style={{ padding: "0.5rem 0.8rem", fontSize: "var(--text-xs)" }} onClick={() => setShowCreateModal(true)}>Create draft</button>
+          <strong style={{ display: "block", fontSize: "var(--text-md)" }}>Nothing waiting for review</strong>
+          <p style={{ margin: "0.4rem 0 0", color: "var(--muted)", fontSize: "var(--text-sm)" }}>Drafts submitted for approval will appear here.</p>
         </div>
       ) : (
         <div style={{ display: "grid", gap: "1rem", gridTemplateColumns: viewMode === "grid" ? "repeat(auto-fill, minmax(min(100%, 320px), 1fr))" : "1fr" }}>

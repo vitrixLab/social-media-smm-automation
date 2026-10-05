@@ -8,37 +8,55 @@ export async function GET(request: NextRequest) {
   const limit = await checkRateLimit(request, { limit: 120, scope: "crm:drafts:read" });
   if (!limit.allowed) return rateLimitResponse(limit);
   const { searchParams } = new URL(request.url);
-  const status = searchParams.get("status");
-  const platform = searchParams.get("platform");
+
+  const statusParam = searchParams.get("status");
+  const platformParam = searchParams.get("platform");
+  const q = searchParams.get("q")?.trim() || undefined;
+  const sortParam = searchParams.get("sort") || "created";
+  const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10) || 1);
+  const pageLimit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") ?? "20", 10) || 20));
 
   const session = await verifySession(request);
   if (!session.valid) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   const workspaceId = session.payload.workspaceId;
 
-  let filtered = await prisma.contentDraft.findMany({
-    where: { workspaceId },
-    orderBy: { createdAt: "desc" },
-  });
+  // Build server-side WHERE — no in-memory filtering.
+  const where: Parameters<typeof prisma.contentDraft.findMany>[0]["where"] = { workspaceId };
+  if (statusParam && statusParam !== "all") where.status = statusParam as never;
+  if (platformParam && platformParam !== "all") where.platform = platformParam;
+  if (q) where.content = { contains: q, mode: "insensitive" };
 
-  if (status && status !== "all") {
-    filtered = filtered.filter((d) => d.status === status);
-  }
-  if (platform && platform !== "all") {
-    filtered = filtered.filter((d) => d.platform === platform);
-  }
+  const orderBy: Parameters<typeof prisma.contentDraft.findMany>[0]["orderBy"] =
+    sortParam === "updated" ? { updatedAt: "desc" }
+    : sortParam === "scheduledAt" ? { scheduledAt: "desc" }
+    : { createdAt: "desc" };
 
-  const counts = {
-    all: filtered.length,
-    pending: filtered.filter((d) => d.status === "pending").length,
-    approved: filtered.filter((d) => d.status === "approved").length,
-    draft: filtered.filter((d) => d.status === "draft").length,
-    rejected: filtered.filter((d) => d.status === "rejected").length,
-    published: filtered.filter((d) => d.status === "published").length,
-  };
+  const [drafts, total, statusGroups] = await Promise.all([
+    prisma.contentDraft.findMany({
+      where,
+      orderBy,
+      skip: (page - 1) * pageLimit,
+      take: pageLimit,
+    }),
+    prisma.contentDraft.count({ where }),
+    // Workspace-scoped status counts — independent of the active filter.
+    prisma.contentDraft.groupBy({
+      by: ["status"],
+      where: { workspaceId },
+      _count: { status: true },
+    }),
+  ]);
+
+  const counts: Record<string, number> = { all: 0, pending: 0, approved: 0, draft: 0, rejected: 0, published: 0, scheduled: 0 };
+  for (const row of statusGroups) {
+    const key = String(row.status);
+    counts[key] = (counts[key] ?? 0) + row._count.status;
+    counts.all += row._count.status;
+  }
 
   return NextResponse.json({
-    drafts: filtered,
-    total: filtered.length,
+    drafts,
+    pagination: { page, limit: pageLimit, total },
     counts,
   });
 }

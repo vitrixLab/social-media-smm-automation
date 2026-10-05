@@ -166,27 +166,60 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
+  const limit = await checkRateLimit(request, { limit: 60, windowSeconds: 60, scope: "settings:patch" });
+  if (!limit.allowed) return rateLimitResponse(limit);
   try {
     const body = await request.json();
-    const { category, key, value } = body;
+    const { category, key, value } = body as { category?: string; key?: string; value?: unknown };
 
     const session = await verifySession(request);
     if (!session.valid) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  const workspaceId = session.payload.workspaceId;
+    const workspaceId = session.payload.workspaceId;
 
     if (!workspaceId) {
       return NextResponse.json({ error: "Authentication required" }, { status: 401 });
     }
 
-    // Update a specific setting
-    return NextResponse.json({
-      success: true,
-      category,
-      workspaceId,
-      key,
-      value,
-      message: "Setting updated via PATCH",
-    });
+    if (category === "automation") {
+      // Persist a single key/value pair into the SystemState singleton settings JSON.
+      const allowedKeys = ["dryRun", "aiProvider", "moderateEnabled", "autoPublish"] as const;
+      type AllowedKey = typeof allowedKeys[number];
+      if (!key || !(allowedKeys as readonly string[]).includes(key)) {
+        return NextResponse.json({ error: `key must be one of: ${allowedKeys.join(", ")}` }, { status: 400 });
+      }
+      // Type guard: dryRun/moderateEnabled/autoPublish must be boolean; aiProvider must be string ≤64 chars.
+      const isBoolKey = (["dryRun", "moderateEnabled", "autoPublish"] as string[]).includes(key);
+      if (isBoolKey && typeof value !== "boolean") {
+        return NextResponse.json({ error: `${key} must be a boolean` }, { status: 400 });
+      }
+      if (key === "aiProvider" && (typeof value !== "string" || (value as string).length > 64)) {
+        return NextResponse.json({ error: "aiProvider must be a string ≤ 64 characters" }, { status: 400 });
+      }
+
+      const current = await prisma.systemState.upsert({
+        where: { id: "singleton" },
+        update: {},
+        create: { id: "singleton" },
+      });
+      const merged = { ...readSettings(current.settings), [key as AllowedKey]: value };
+      await prisma.systemState.update({
+        where: { id: "singleton" },
+        data: { settings: merged as Prisma.InputJsonObject },
+      });
+      await writeAuditEvent({
+        workspaceId,
+        actorUserId: session.payload.userId,
+        action: "settings.changed",
+        resourceType: "settings",
+        resourceId: "automation",
+        requestId: requestIdFromHeaders(request),
+        ipHash: clientIpHash(request),
+        metadata: { category, key, value },
+      });
+      return NextResponse.json({ success: true, category, workspaceId, key, value });
+    }
+
+    return NextResponse.json({ error: "PATCH is only supported for category=automation" }, { status: 400 });
   } catch {
     return NextResponse.json({ error: "Failed to update setting" }, { status: 500 });
   }
