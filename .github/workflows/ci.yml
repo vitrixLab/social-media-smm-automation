@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:
@@ -17,17 +17,14 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: pytest -q
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --dir nextjs-setup/nextjs-dashboard build
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: pnpm/action-setup@v4
         with:
-          python-version: "3.11"
-      - run: pip install -e ".[dev]"
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: nextjs-setup/nextjs-dashboard/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir nextjs-setup/nextjs-dashboard build
+      - run: pnpm --dir nextjs-setup/nextjs-dashboard lint
