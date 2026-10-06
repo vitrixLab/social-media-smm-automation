@@ -21,12 +21,13 @@ export async function GET(request: NextRequest) {
   const workspaceId = session.payload.workspaceId;
 
   // Build server-side WHERE — no in-memory filtering.
-  const where: Parameters<typeof prisma.contentDraft.findMany>[0]["where"] = { workspaceId };
+  type FindManyArgs = NonNullable<Parameters<typeof prisma.contentDraft.findMany>[0]>;
+  const where: NonNullable<FindManyArgs["where"]> = { workspaceId };
   if (statusParam && statusParam !== "all") where.status = statusParam as never;
-  if (platformParam && platformParam !== "all") where.platform = platformParam;
-  if (q) where.content = { contains: q, mode: "insensitive" };
+  if (platformParam && platformParam !== "all") where.platform = platformParam as never;
+  if (q) where.text = { contains: q, mode: "insensitive" };
 
-  const orderBy: Parameters<typeof prisma.contentDraft.findMany>[0]["orderBy"] =
+  const orderBy: NonNullable<FindManyArgs["orderBy"]> =
     sortParam === "updated" ? { updatedAt: "desc" }
     : sortParam === "scheduledAt" ? { scheduledAt: "desc" }
     : { createdAt: "desc" };
