@@ -1,27 +1,24 @@
-import Redis from "ioredis";
 import { PrismaClient } from "@prisma/client";
-import { dequeuePublishJob, getQueueStats, addToDLQ, getDLQLength } from "@/lib/queue";
+import {
+  ackPublishJob,
+  addToDLQ,
+  dequeuePublishJob,
+  renewPublishLease,
+  retryPublishJob,
+} from "@/lib/queue";
 import { MetaAdapter, LinkedInAdapter, TwitterAdapter } from "@/integrations/adapters";
-import { PublishingService } from "@/publishing/service";
 import { ModerationService } from "@/moderation/policy";
-import { BrandProfile, ContentDraft } from "@/domain/models";
-import crypto from "crypto";
+import { BrandProfile } from "@/domain/models";
 
-const redis = new Redis();
 const prisma = new PrismaClient({
   log: process.env.NODE_ENV !== "production" ? ["query", "error", "warn"] : ["error"],
 });
-
-const PUBLISH_QUEUE = "smmai:queue:publish";
-const DEAD_LETTER_QUEUE = "smmai:dlq:publish";
-const FAILURE_COUNTER_PREFIX = "smmai:failure:";
 
 const moderationService = new ModerationService();
 const adapters = {
   meta: new MetaAdapter(),
   linkedin: new LinkedInAdapter(),
   x: new TwitterAdapter(),
-  // Legacy alias accepted at intake; dispatch stays canonical.
   twitter: new TwitterAdapter(),
 } as const;
 
@@ -43,29 +40,17 @@ interface ProcessResult {
 async function processPublishJob(
   event: Awaited<ReturnType<typeof dequeuePublishJob>>["event"]
 ): Promise<ProcessResult> {
-  if (!event) {
-    return { jobId: "", status: "failed", message: "No job available" };
-  }
+  if (!event) return { jobId: "", status: "failed", message: "No job available" };
 
-  const { jobId, workflowId, workspaceId, socialAccountId, contentRevisionId, idempotencyKey } = event;
+  const { jobId, workspaceId, contentRevisionId } = event;
+  let providerCallStarted = false;
 
   try {
-    // Find the draft
-    const draft = await prisma.contentDraft.findUnique({
-      where: { id: contentRevisionId },
-    });
-
+    const draft = await prisma.contentDraft.findUnique({ where: { id: contentRevisionId } });
     if (!draft) {
-      return {
-        jobId,
-        status: "failed",
-        message: `Draft ${contentRevisionId} not found`,
-      };
+      return { jobId, status: "failed", message: `Draft ${contentRevisionId} not found` };
     }
 
-    // Load the workspace's brand profile from the database.
-    // Falls back to empty-string defaults when no profile exists yet so
-    // moderation never hard-crashes on a brand-less workspace.
     const brandRow = await prisma.brandProfile.findFirst({
       where: { workspaceId },
       orderBy: { createdAt: "asc" },
@@ -75,17 +60,13 @@ async function processPublishJob(
       brandRow?.audience || "",
       brandRow?.voice || "",
     );
-
-    // Run moderation
     const moderation = moderationService.validate(draft, brand);
 
     if (!moderation.approved) {
-      // Mark draft as rejected (lowercase enum values per schema).
       await prisma.contentDraft.update({
         where: { id: contentRevisionId },
         data: { status: "rejected" },
       });
-
       return {
         jobId,
         status: "failed",
@@ -93,112 +74,106 @@ async function processPublishJob(
       };
     }
 
-    // Publish via the provider adapter for this draft's platform.
     const adapter = resolveAdapter((draft as { platform?: string }).platform ?? "");
-    if (!adapter) {
-      return {
-        jobId,
-        status: "failed",
-        message: `Unsupported platform for job ${jobId}`,
-      };
-    }
+    if (!adapter) return { jobId, status: "failed", message: `Unsupported platform for job ${jobId}` };
 
-    // DRY_RUN safety gate: never call a provider unless explicitly disabled.
-    const dryRun = process.env.DRY_RUN !== "false";
-    if (dryRun) {
+    // Live publishing remains behind the existing explicit DRY_RUN=false switch.
+    if (process.env.DRY_RUN !== "false") {
       await prisma.contentDraft.update({
         where: { id: contentRevisionId },
         data: { status: "approved" },
       });
-      return {
-        jobId,
-        status: "succeeded",
-        message: "dry-run: publish not sent",
-      };
+      return { jobId, status: "succeeded", message: "dry-run: publish not sent" };
     }
 
+    // Once a provider call starts, a thrown error can mean the post was accepted
+    // but the response/persistence was lost. Do not automatically republish it.
+    providerCallStarted = true;
     const publishResult = await adapter.publish(draft, { dry_run: false });
 
-    if (publishResult.success) {
-      // Update draft status to published (lowercase enum values per schema).
-      await prisma.contentDraft.update({
-        where: { id: contentRevisionId },
-        data: { status: "published" },
-      });
-
-      // Record success in publishJob (we'd need to track this, for now just update draft)
-      return {
-        jobId,
-        status: "succeeded",
-        externalId: publishResult.external_id,
-        message: "Published successfully",
-      };
-    } else {
-      // Check if retryable
-      const failureCountStr = await redis.get(`${FAILURE_COUNTER_PREFIX}${jobId}`);
-      const failureCount = failureCountStr ? parseInt(failureCountStr) : 0;
-
-      if (failureCount >= 4) {
-        // Move to dead-letter queue
-        await addToDLQ(jobId, publishResult.message || "Unknown error");
-        return {
-          jobId,
-          status: "failed",
-          message: "Moved to dead-letter queue after max retries",
-        };
-      }
-
-      // Increment failure counter
-      await redis.set(
-        `${FAILURE_COUNTER_PREFIX}${jobId}`,
-        String(failureCount + 1),
-        "EX",
-        86400
-      );
-
+    if (!publishResult.success) {
       return {
         jobId,
         status: "retried",
-        message: `Failed (${failureCount + 1}/5): ${publishResult.message || "Unknown error"}`,
+        message: publishResult.message || "Provider returned an unsuccessful result",
       };
     }
-  } catch (error) {
-    console.error(`Publish worker error for job ${jobId}:`, error);
+
+    if (!publishResult.external_id || !publishResult.external_id.trim()) {
+      return {
+        jobId,
+        status: "failed",
+        message: "Provider reported success without an external ID; manual reconciliation required",
+      };
+    }
+
+    await prisma.contentDraft.update({
+      where: { id: contentRevisionId },
+      data: { status: "published" },
+    });
     return {
       jobId,
-      status: "failed",
-      message: error instanceof Error ? error.message : "Unknown error",
+      status: "succeeded",
+      externalId: publishResult.external_id,
+      message: "Published successfully",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error(`Publish worker error for job ${jobId}:`, error);
+    // Pre-provider infrastructure errors are retryable. A thrown error after
+    // the provider call begins is ambiguous and goes to DLQ for reconciliation.
+    return {
+      jobId,
+      status: providerCallStarted ? "failed" : "retried",
+      message: providerCallStarted
+        ? `Ambiguous publish outcome; manual reconciliation required: ${message}`
+        : message,
     };
   }
 }
 
 async function publishWorkerLoop() {
   console.log("Publish worker started");
-
   while (true) {
     try {
       const { jobId, event } = await dequeuePublishJob();
-
-      if (event) {
-        const result = await processPublishJob(event);
-
-        // If job succeeded or moved to DLQ, remove from queue
-        if (result.status === "succeeded" || result.status === "failed") {
-          await redis.del(`${PUBLISH_QUEUE}:${jobId}`);
-          await redis.zrem(PUBLISH_QUEUE, jobId);
-        }
-      } else {
-        // No job available, short sleep
+      if (!event) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+
+      // Renew the visibility lease during long provider/database operations.
+      const leaseHeartbeat = setInterval(() => {
+        void renewPublishLease(jobId).catch((error) => {
+          console.error(`Failed to renew publish lease for ${jobId}:`, error);
+        });
+      }, 30_000);
+
+      try {
+        const result = await processPublishJob(event);
+        if (result.status === "succeeded") {
+          // Ack only after any required DB status update completed.
+          await ackPublishJob(jobId);
+        } else if (result.status === "retried") {
+          const retry = await retryPublishJob(jobId, result.message || "Retryable publish failure");
+          if (!retry.retried) {
+            console.error(`Publish job ${jobId} exhausted retries: ${retry.reason}`);
+          }
+        } else {
+          await addToDLQ(jobId, result.message || "Terminal publish failure");
+        }
+      } finally {
+        clearInterval(leaseHeartbeat);
       }
     } catch (error) {
+      // If the worker dies before it can acknowledge/retry, the visibility lease
+      // expires and dequeuePublishJob will recover the claim.
       console.error("Publish worker loop error:", error);
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
 }
 
-// Start the worker
 publishWorkerLoop().catch((err) => {
   console.error("Fatal publish worker error:", err);
   process.exit(1);
