@@ -10,7 +10,8 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "predev": "prisma generate",
-    "prebuild": "prisma generate"
+    "prebuild": "prisma generate",
+    "test:queue": "tsx --test src/lib/queue.test.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
